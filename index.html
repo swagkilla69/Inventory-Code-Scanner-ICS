@@ -219,7 +219,10 @@
       if (scannerRunning) return;
 
       if (typeof Html5Qrcode === 'undefined') {
-        showStatus('The scanner library failed to load. Reload the page and try again.', 'error');
+        showStatus(
+          'The scanner library failed to load. Reload the page and try again.',
+          'error'
+        );
         return;
       }
 
@@ -244,7 +247,10 @@
 
             lastScannedCode = code;
             barcodeInput.value = code;
-            showStatus('Barcode scanned. Verify the item and record the transaction.');
+
+            showStatus(
+              'Barcode scanned. Verify the item and record the transaction.'
+            );
 
             if (scannerRunning) {
               try {
@@ -276,7 +282,9 @@
         await scanner.resume();
         showStatus('Camera ready. Point it at a barcode.');
       } catch (error) {
-        showStatus('Transaction form is ready. Tap Start Scanner to restart the camera.');
+        showStatus(
+          'Transaction form is ready. Tap Start Scanner to restart the camera.'
+        );
       }
     }
 
@@ -295,12 +303,16 @@
       if (!pendingRequestId) return;
 
       if (!result || result.requestId !== pendingRequestId) {
+        // The transaction outcome cannot be verified.
+        // Do not automatically retry or clear the entered form.
+        pendingRequestId = null;
+        stopPendingRequest();
+        submitButton.disabled = false;
+
         showStatus(
-          'Received an unexpected response. Check the Log before retrying.',
+          'The server response could not be verified. Do not retry yet. Check the Log and On Hand quantities first.',
           'error'
         );
-        submitButton.disabled = false;
-        stopPendingRequest();
         return;
       }
 
@@ -308,12 +320,18 @@
       submitButton.disabled = false;
       pendingRequestId = null;
 
-      if (result.success) {
-        showStatus(result.message || 'Transaction recorded successfully.', 'success');
+      if (result.success === true) {
+        showStatus(
+          result.message || 'Transaction recorded successfully.',
+          'success'
+        );
         resetForm();
         resumeScanner();
       } else {
-        showStatus(result.message || 'Transaction failed.', 'error');
+        showStatus(
+          result.message || 'Transaction failed. No retry was made.',
+          'error'
+        );
       }
     }
 
@@ -321,7 +339,10 @@
       event.preventDefault();
 
       if (pendingRequestId) {
-        showStatus('A transaction request is already pending. Wait for its response.', 'error');
+        showStatus(
+          'A transaction request is already pending. Wait for its response.',
+          'error'
+        );
         return;
       }
 
@@ -362,8 +383,10 @@
       });
 
       const separator = BACKEND_URL.includes('?') ? '&' : '?';
+
       requestScript = document.createElement('script');
-      requestScript.src = BACKEND_URL + separator + params.toString();
+      requestScript.src =
+        BACKEND_URL + separator + params.toString();
       requestScript.async = true;
 
       window.handleTransactionResponse = handleTransactionResponse;
@@ -372,10 +395,11 @@
         if (pendingRequestId !== requestId) return;
 
         stopPendingRequest();
+        pendingRequestId = null;
         submitButton.disabled = false;
 
         showStatus(
-          'Could not receive a response from Apps Script. Check the Log before retrying to avoid a duplicate.',
+          'Could not receive a response from Apps Script. The transaction outcome is unknown. Check the Log and On Hand quantities before retrying.',
           'error'
         );
       };
@@ -384,10 +408,11 @@
         if (pendingRequestId !== requestId) return;
 
         stopPendingRequest();
+        pendingRequestId = null;
         submitButton.disabled = false;
 
         showStatus(
-          'No response received. Check the Log before retrying to avoid a duplicate.',
+          'No response received. The transaction outcome is unknown. Check the Log and On Hand quantities before retrying.',
           'error'
         );
       }, 20000);
