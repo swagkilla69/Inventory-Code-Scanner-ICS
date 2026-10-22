@@ -4,7 +4,6 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-
   <title>Inventory Barcode Scanner</title>
 
   <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
@@ -70,13 +69,9 @@
 
 <body>
   <h1>Inventory Scanner</h1>
+  <p>Scan a barcode, choose IN or OUT, enter the quantity, and record it. The scanner will stay on this page.</p>
 
-  <p>Scan a barcode, choose IN or OUT, enter the quantity, and record it. The scanner will stay on this page for the next item.</p>
-
-  <button id="startButton" type="button" onclick="startScanner()">
-    Start Scanner
-  </button>
-
+  <button id="startButton" type="button">Start Scanner</button>
   <div id="reader"></div>
 
   <label for="barcode">Barcode</label>
@@ -96,17 +91,10 @@
   <label for="notes">Notes (optional)</label>
   <input id="notes" type="text" placeholder="Optional notes">
 
-  <button id="submitButton" type="button" onclick="submitTransaction()">
-    Record Transaction
-  </button>
+  <button id="submitButton" type="button">Record Transaction</button>
+  <button id="clearButton" type="button" style="background:#555">Clear Form</button>
 
-  <button type="button" onclick="clearForm()" style="background:#555">
-    Clear Form
-  </button>
-
-  <div id="status" role="status" aria-live="polite">
-    Ready to scan.
-  </div>
+  <div id="status" role="status" aria-live="polite">Ready to scan.</div>
 
   <script>
     const BACKEND_URL =
@@ -116,11 +104,40 @@
     let scanning = false;
     let scanHandled = false;
     let submitting = false;
+    let pendingRequestId = null;
+    let requestScript = null;
+    let requestTimer = null;
+
+    const startButton = document.getElementById('startButton');
+    const submitButton = document.getElementById('submitButton');
+    const clearButton = document.getElementById('clearButton');
 
     function showStatus(message, success) {
       const status = document.getElementById('status');
       status.textContent = message;
       status.style.background = success ? '#d9f3df' : '#ffe1e1';
+    }
+
+    function newRequestId() {
+      if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+        return window.crypto.randomUUID();
+      }
+
+      return Date.now().toString(36) + '_' +
+        Math.random().toString(36).slice(2) +
+        Math.random().toString(36).slice(2);
+    }
+
+    function removeRequestScript() {
+      if (requestTimer) {
+        clearTimeout(requestTimer);
+        requestTimer = null;
+      }
+
+      if (requestScript) {
+        requestScript.remove();
+        requestScript = null;
+      }
     }
 
     async function stopScanner() {
@@ -129,28 +146,26 @@
         return;
       }
 
+      const oldScanner = scanner;
+      scanner = null;
+      const wasScanning = scanning;
+      scanning = false;
+
       try {
-        if (scanning) {
-          await scanner.stop();
-        }
+        if (wasScanning) await oldScanner.stop();
       } catch (error) {
         console.warn('Camera stop:', error);
       }
 
       try {
-        scanner.clear();
+        oldScanner.clear();
       } catch (error) {
         console.warn('Scanner cleanup:', error);
       }
-
-      scanner = null;
-      scanning = false;
     }
 
     async function startScanner() {
       if (scanning || submitting) return;
-
-      const startButton = document.getElementById('startButton');
 
       if (typeof Html5Qrcode === 'undefined') {
         showStatus('Scanner library failed to load. Check your internet connection.', false);
@@ -161,10 +176,7 @@
       scanHandled = false;
 
       try {
-        // Clean up any previous scanner instance.
-        if (scanner) {
-          await stopScanner();
-        }
+        await stopScanner();
 
         scanner = new Html5Qrcode('reader', {
           formatsToSupport: [
@@ -181,36 +193,40 @@
 
         showStatus('Requesting camera access...', true);
 
-        await scanner.start(
+        const activeScanner = scanner;
+
+        await activeScanner.start(
           { facingMode: 'environment' },
           { fps: 10, aspectRatio: 1.7778 },
           async function(decodedText) {
-            if (scanHandled || submitting) return;
+            if (scanHandled || submitting || scanner !== activeScanner) return;
 
             scanHandled = true;
             showStatus('Barcode detected. Closing camera...', true);
 
-            await stopScanner();
+            try {
+              await stopScanner();
+            } finally {
+              document.getElementById('barcode').value = decodedText;
+              startButton.disabled = false;
+              startButton.textContent = 'Scan Again';
 
-            document.getElementById('barcode').value = decodedText;
-            startButton.disabled = false;
-            startButton.textContent = 'Scan Again';
-
-            showStatus(
-              'Scanned: ' + decodedText +
-              '. Choose IN or OUT, check quantity, then record.',
-              true
-            );
+              showStatus(
+                'Scanned: ' + decodedText +
+                '. Choose IN or OUT, check quantity, then record.',
+                true
+              );
+            }
           },
           function() {
-            // Continue scanning when no barcode is detected.
+            // Keep scanning while no barcode is detected.
           }
         );
 
         scanning = true;
         startButton.disabled = false;
-        startButton.textContent = 'Stop / Restart Scanner';
-        showStatus('Camera active. Point it at the barcode.', true);
+        startButton.textContent = 'Camera Active';
+        showStatus('Camera active. Point it at a barcode.', true);
 
       } catch (error) {
         scanning = false;
@@ -229,12 +245,51 @@
         startButton.textContent = 'Start Scanner';
 
         showStatus(
-          'Camera error: ' + (error.name || 'Error') +
-          ': ' + (error.message || String(error)),
+          'Camera error: ' + (error.message || String(error)),
           false
         );
       }
     }
+
+    // Called by Apps Script's JSONP response.
+    window.handleTransactionResponse = async function(result) {
+      if (!submitting) return;
+
+      removeRequestScript();
+      submitting = false;
+      submitButton.disabled = false;
+      submitButton.textContent = 'Record Transaction';
+
+      if (!result || result.requestId !== pendingRequestId) {
+        showStatus(
+          'Received an unexpected response. Check the Log before retrying.',
+          false
+        );
+        return;
+      }
+
+      if (!result.success) {
+        // Keep the form and request ID so retrying won't create a new request.
+        showStatus('Transaction failed: ' + result.message, false);
+        return;
+      }
+
+      const recordedBarcode = document.getElementById('barcode').value;
+      pendingRequestId = null;
+
+      document.getElementById('barcode').value = '';
+      document.getElementById('quantity').value = '1';
+      document.getElementById('notes').value = '';
+
+      showStatus(result.message + ' Preparing the next scan...', true);
+
+      startButton.disabled = false;
+      startButton.textContent = 'Start Scanner';
+
+      // Restart the camera automatically. If the browser blocks this,
+      // the Start Scanner button remains available.
+      await startScanner();
+    };
 
     async function submitTransaction() {
       if (submitting) return;
@@ -243,7 +298,6 @@
       const action = document.getElementById('action').value;
       const quantity = Number(document.getElementById('quantity').value);
       const notes = document.getElementById('notes').value.trim();
-      const submitButton = document.getElementById('submitButton');
 
       if (!barcode) {
         showStatus('Scan or enter a barcode first.', false);
@@ -255,83 +309,87 @@
         return;
       }
 
+      // Reuse the same ID after a timeout or server error.
+      if (!pendingRequestId) {
+        pendingRequestId = newRequestId();
+      }
+
       const params = new URLSearchParams({
         tx: '1',
+        callback: 'handleTransactionResponse',
+        requestId: pendingRequestId,
         barcode: barcode,
         action: action,
         quantity: String(quantity),
         notes: notes
       });
 
-      const transactionUrl = BACKEND_URL + '?' + params.toString();
+      await stopScanner();
 
       submitting = true;
       submitButton.disabled = true;
       submitButton.textContent = 'Recording...';
+      startButton.disabled = true;
 
-      await stopScanner();
+      showStatus('Sending transaction and waiting for confirmation...', true);
 
-      showStatus('Sending transaction to inventory...', true);
+      removeRequestScript();
 
-      try {
-        // Send the request without navigating away from this scanner page.
-        // no-cors prevents the browser from blocking the cross-origin request.
-        await fetch(transactionUrl, {
-          method: 'GET',
-          mode: 'no-cors',
-          cache: 'no-store'
-        });
+      requestScript = document.createElement('script');
+      requestScript.src = BACKEND_URL + '?' + params.toString();
+      requestScript.async = true;
 
-        // The opaque response cannot confirm whether Apps Script accepted
-        // the transaction, so the Log sheet remains the source of truth.
-        document.getElementById('barcode').value = '';
-        document.getElementById('quantity').value = '1';
-        document.getElementById('notes').value = '';
-
-        showStatus(
-          'Transaction request sent for ' + barcode +
-          '. Check the Log sheet if confirmation is needed. Preparing the next scan...',
-          true
-        );
-
+      requestScript.onerror = function() {
+        removeRequestScript();
         submitting = false;
         submitButton.disabled = false;
-        submitButton.textContent = 'Record Transaction';
-
-        // Restart the camera for the next item.
-        await startScanner();
-
-      } catch (error) {
-        submitting = false;
-        submitButton.disabled = false;
-        submitButton.textContent = 'Record Transaction';
+        submitButton.textContent = 'Retry Transaction';
 
         showStatus(
-          'Could not send the transaction request: ' +
-          (error.message || String(error)) +
-          '. Check the Log before retrying to avoid a duplicate transaction.',
+          'No response received. The transaction may still have been saved. ' +
+          'Retry using the same form, or check the Log first.',
           false
         );
-      }
+      };
+
+      document.head.appendChild(requestScript);
+
+      requestTimer = setTimeout(function() {
+        if (!submitting) return;
+
+        removeRequestScript();
+        submitting = false;
+        submitButton.disabled = false;
+        submitButton.textContent = 'Retry Transaction';
+
+        showStatus(
+          'The server did not confirm the result in time. ' +
+          'Your form and request ID are preserved. Check the Log before retrying.',
+          false
+        );
+      }, 20000);
     }
 
     async function clearForm() {
       if (submitting) return;
 
       await stopScanner();
-
       scanHandled = false;
+      pendingRequestId = null;
 
       document.getElementById('barcode').value = '';
       document.getElementById('quantity').value = '1';
       document.getElementById('notes').value = '';
 
-      const startButton = document.getElementById('startButton');
       startButton.disabled = false;
       startButton.textContent = 'Start Scanner';
 
       showStatus('Form cleared.', true);
     }
+
+    startButton.addEventListener('click', startScanner);
+    submitButton.addEventListener('click', submitTransaction);
+    clearButton.addEventListener('click', clearForm);
   </script>
 </body>
 </html>
