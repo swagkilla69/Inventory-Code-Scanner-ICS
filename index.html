@@ -1,0 +1,290 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <title>Inventory Barcode Scanner</title>
+
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 500px;
+      margin: auto;
+      padding: 20px;
+      background: #f4f6f8;
+      color: #222;
+    }
+
+    label {
+      display: block;
+      margin-top: 18px;
+      font-weight: bold;
+    }
+
+    input, select, button {
+      box-sizing: border-box;
+      width: 100%;
+      padding: 14px;
+      margin-top: 7px;
+      font-size: 18px;
+      border-radius: 8px;
+    }
+
+    input, select {
+      border: 1px solid #aaa;
+      background: white;
+    }
+
+    button {
+      border: 0;
+      background: #1769aa;
+      color: white;
+      font-weight: bold;
+      cursor: pointer;
+    }
+
+    button:disabled {
+      opacity: 0.6;
+    }
+
+    #reader {
+      width: 100%;
+      margin-top: 15px;
+      overflow: hidden;
+    }
+
+    #status {
+      margin-top: 18px;
+      padding: 12px;
+      border-radius: 8px;
+      overflow-wrap: anywhere;
+      background: #e5e7eb;
+    }
+  </style>
+</head>
+
+<body>
+  <h1>Inventory Scanner</h1>
+
+  <p>Tap Start Scanner and point the rear camera at a barcode. The camera closes after a successful scan.</p>
+
+  <button id="startButton" type="button" onclick="startScanner()">
+    Start Scanner
+  </button>
+
+  <div id="reader"></div>
+
+  <label for="barcode">Barcode</label>
+  <input id="barcode" type="text" inputmode="numeric"
+         autocomplete="off" placeholder="Barcode appears here">
+
+  <label for="action">Transaction</label>
+  <select id="action">
+    <option value="OUT">OUT — Remove stock</option>
+    <option value="IN">IN — Add stock</option>
+  </select>
+
+  <label for="quantity">Quantity</label>
+  <input id="quantity" type="number" min="0.01"
+         step="any" value="1">
+
+  <label for="notes">Notes (optional)</label>
+  <input id="notes" type="text" placeholder="Optional notes">
+
+  <button id="submitButton" type="button" onclick="submitTransaction()">
+    Record Transaction
+  </button>
+
+  <button type="button" onclick="clearForm()" style="background:#555">
+    Clear Form
+  </button>
+
+  <div id="status" role="status" aria-live="polite">
+    Ready to scan.
+  </div>
+
+  <script>
+    const BACKEND_URL =
+      'https://script.google.com/macros/s/AKfycbztT2Lu8JUmjvPJ6rOZyV-nnFlbuS2j0I0dVnSyGA3ogvDTlAzn7Y8QRVVHiPUjWcM/exec';
+
+    let scanner = null;
+    let scanning = false;
+    let scanHandled = false;
+
+    function showStatus(message, success) {
+      const status = document.getElementById('status');
+      status.textContent = message;
+      status.style.background = success ? '#d9f3df' : '#ffe1e1';
+    }
+
+    async function startScanner() {
+      if (scanning) return;
+
+      if (typeof Html5Qrcode === 'undefined') {
+        showStatus('Scanner library failed to load. Check your internet connection.', false);
+        return;
+      }
+
+      const startButton = document.getElementById('startButton');
+      startButton.disabled = true;
+      scanHandled = false;
+
+      try {
+        scanner = new Html5Qrcode('reader', {
+          formatsToSupport: [
+            Html5QrcodeSupportedFormats.CODE_128,
+            Html5QrcodeSupportedFormats.EAN_13,
+            Html5QrcodeSupportedFormats.EAN_8,
+            Html5QrcodeSupportedFormats.UPC_A,
+            Html5QrcodeSupportedFormats.UPC_E,
+            Html5QrcodeSupportedFormats.CODE_39,
+            Html5QrcodeSupportedFormats.ITF
+          ],
+          verbose: false
+        });
+
+        showStatus('Requesting camera access...', true);
+
+        await scanner.start(
+          { facingMode: 'environment' },
+          { fps: 10, aspectRatio: 1.7778 },
+          async function(decodedText) {
+            if (scanHandled) return;
+
+            scanHandled = true;
+            scanning = false;
+
+            document.getElementById('barcode').value = decodedText;
+            showStatus('Barcode detected. Closing camera...', true);
+
+            try {
+              await scanner.stop();
+              scanner.clear();
+            } catch (error) {
+              console.error('Camera cleanup:', error);
+            }
+
+            startButton.disabled = false;
+            startButton.textContent = 'Scan Again';
+
+            showStatus(
+              'Scanned: ' + decodedText +
+              '. Choose IN or OUT, check quantity, then record.',
+              true
+            );
+          },
+          function() {
+            // Continue scanning when no barcode is detected.
+          }
+        );
+
+        scanning = true;
+        showStatus('Camera active. Point it at the barcode.', true);
+
+      } catch (error) {
+        scanning = false;
+
+        try {
+          if (scanner && scanner.isScanning) await scanner.stop();
+          if (scanner) scanner.clear();
+        } catch (cleanupError) {
+          console.error(cleanupError);
+        }
+
+        startButton.disabled = false;
+
+        showStatus(
+          'Camera error: ' + (error.name || 'Error') +
+          ': ' + (error.message || String(error)),
+          false
+        );
+      }
+    }
+
+    async function submitTransaction() {
+      const barcode = document.getElementById('barcode').value.trim();
+      const action = document.getElementById('action').value;
+      const quantity = Number(document.getElementById('quantity').value);
+      const notes = document.getElementById('notes').value.trim();
+      const button = document.getElementById('submitButton');
+
+      if (!barcode) {
+        showStatus('Scan or enter a barcode first.', false);
+        return;
+      }
+
+      if (!Number.isFinite(quantity) || quantity <= 0) {
+        showStatus('Quantity must be greater than zero.', false);
+        return;
+      }
+
+      button.disabled = true;
+      button.textContent = 'Sending...';
+
+      try {
+        /*
+         * no-cors avoids a browser preflight request.
+         * The browser will not reveal the backend response, so
+         * this cannot confirm that the transaction was recorded.
+         */
+        await fetch(BACKEND_URL, {
+          method: 'POST',
+          mode: 'no-cors',
+          headers: {
+            'Content-Type': 'text/plain;charset=UTF-8'
+          },
+          body: JSON.stringify({
+            barcode: barcode,
+            action: action,
+            quantity: quantity,
+            notes: notes
+          })
+        });
+
+        showStatus(
+          'Request sent, but recording is NOT yet confirmed. Check the Log tab before submitting again.',
+          true
+        );
+
+      } catch (error) {
+        showStatus(
+          'Could not send transaction: ' +
+          (error.message || String(error)),
+          false
+        );
+
+      } finally {
+        button.disabled = false;
+        button.textContent = 'Record Transaction';
+      }
+    }
+
+    async function clearForm() {
+      if (scanner && scanning) {
+        try {
+          await scanner.stop();
+          scanner.clear();
+        } catch (error) {
+          console.error(error);
+        }
+      }
+
+      scanning = false;
+      scanHandled = false;
+
+      document.getElementById('barcode').value = '';
+      document.getElementById('quantity').value = '1';
+      document.getElementById('notes').value = '';
+
+      document.getElementById('startButton').disabled = false;
+      document.getElementById('startButton').textContent = 'Start Scanner';
+
+      showStatus('Form cleared.', true);
+    }
+  </script>
+</body>
+</html>
