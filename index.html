@@ -70,9 +70,7 @@
       cursor: wait;
     }
 
-    .secondary {
-      background: #555;
-    }
+    .secondary { background: #555; }
 
     #reader {
       width: 100%;
@@ -118,13 +116,8 @@
 
     <form id="transactionForm">
       <label for="barcode">Barcode</label>
-      <input
-        id="barcode"
-        name="barcode"
-        type="text"
-        autocomplete="off"
-        required
-      >
+      <input id="barcode" name="barcode" type="text"
+             autocomplete="off" required>
 
       <label for="action">Transaction Type</label>
       <select id="action" name="action" required>
@@ -133,27 +126,14 @@
       </select>
 
       <label for="quantity">Quantity</label>
-      <input
-        id="quantity"
-        name="quantity"
-        type="number"
-        min="0.000001"
-        step="any"
-        value="1"
-        required
-      >
+      <input id="quantity" name="quantity" type="number"
+             min="0.000001" step="any" value="1" required>
 
       <label for="notes">Notes (optional)</label>
-      <textarea
-        id="notes"
-        name="notes"
-        placeholder="Enter notes here"
-      ></textarea>
+      <textarea id="notes" name="notes"
+                placeholder="Enter notes here"></textarea>
 
-      <button id="submitButton" type="submit">
-        Record Transaction
-      </button>
-
+      <button id="submitButton" type="submit">Record Transaction</button>
       <button id="clearButton" class="secondary" type="button">
         Clear Form
       </button>
@@ -206,13 +186,13 @@
       }
 
       if (requestScript) {
+        requestScript.onerror = null;
         requestScript.remove();
         requestScript = null;
       }
 
-      if (window.handleTransactionResponse) {
-        delete window.handleTransactionResponse;
-      }
+      // Keep the global callback defined.
+      // Removing it while a response is executing can hide the result.
     }
 
     async function startScanner() {
@@ -266,7 +246,7 @@
         showStatus('Camera ready. Point it at a barcode.');
       } catch (error) {
         showStatus(
-          'Could not start the camera. Check camera permission and make sure the page is using HTTPS. ' +
+          'Could not start the camera. Check camera permission and HTTPS. ' +
           (error.message || ''),
           'error'
         );
@@ -302,23 +282,24 @@
     function handleTransactionResponse(result) {
       if (!pendingRequestId) return;
 
-      if (!result || result.requestId !== pendingRequestId) {
-        // The transaction outcome cannot be verified.
-        // Do not automatically retry or clear the entered form.
+      const expectedRequestId = pendingRequestId;
+
+      if (!result || result.requestId !== expectedRequestId) {
         pendingRequestId = null;
         stopPendingRequest();
         submitButton.disabled = false;
 
         showStatus(
-          'The server response could not be verified. Do not retry yet. Check the Log and On Hand quantities first.',
+          'A response arrived, but its request ID did not match. ' +
+          'Check Log and On Hand quantities before retrying.',
           'error'
         );
         return;
       }
 
       stopPendingRequest();
-      submitButton.disabled = false;
       pendingRequestId = null;
+      submitButton.disabled = false;
 
       if (result.success === true) {
         showStatus(
@@ -329,11 +310,14 @@
         resumeScanner();
       } else {
         showStatus(
-          result.message || 'Transaction failed. No retry was made.',
+          result.message || 'Transaction failed.',
           'error'
         );
       }
     }
+
+    // Expose the callback for Apps Script JSONP responses.
+    window.handleTransactionResponse = handleTransactionResponse;
 
     form.addEventListener('submit', event => {
       event.preventDefault();
@@ -366,8 +350,8 @@
         return;
       }
 
-      pendingRequestId = makeRequestId();
-      const requestId = pendingRequestId;
+      const requestId = makeRequestId();
+      pendingRequestId = requestId;
 
       submitButton.disabled = true;
       showStatus('Submitting transaction. Please wait...');
@@ -375,21 +359,16 @@
       const params = new URLSearchParams({
         tx: '1',
         callback: 'handleTransactionResponse',
-        requestId,
-        barcode,
-        action,
-        quantity,
-        notes
+        requestId: requestId,
+        barcode: barcode,
+        action: action,
+        quantity: quantity,
+        notes: notes
       });
 
-      const separator = BACKEND_URL.includes('?') ? '&' : '?';
-
       requestScript = document.createElement('script');
-      requestScript.src =
-        BACKEND_URL + separator + params.toString();
       requestScript.async = true;
-
-      window.handleTransactionResponse = handleTransactionResponse;
+      requestScript.src = BACKEND_URL + '?' + params.toString();
 
       requestScript.onerror = () => {
         if (pendingRequestId !== requestId) return;
@@ -399,7 +378,9 @@
         submitButton.disabled = false;
 
         showStatus(
-          'Could not receive a response from Apps Script. The transaction outcome is unknown. Check the Log and On Hand quantities before retrying.',
+          'The browser failed to load the Apps Script response. ' +
+          'The transaction outcome is unknown. Check Log and On Hand ' +
+          'before retrying.',
           'error'
         );
       };
@@ -412,7 +393,8 @@
         submitButton.disabled = false;
 
         showStatus(
-          'No response received. The transaction outcome is unknown. Check the Log and On Hand quantities before retrying.',
+          'Timed out waiting for Apps Script. The transaction outcome ' +
+          'is unknown. Check Log and On Hand before retrying.',
           'error'
         );
       }, 20000);
@@ -423,7 +405,7 @@
     clearButton.addEventListener('click', () => {
       if (pendingRequestId) {
         showStatus(
-          'A transaction is pending. Wait for the response before clearing the form.',
+          'A transaction is pending. Wait for the response before clearing.',
           'error'
         );
         return;
