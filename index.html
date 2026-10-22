@@ -163,6 +163,7 @@
     let pendingRequestId = null;
     let requestTimeout = null;
     let requestScript = null;
+    let activeCallbackName = null;
     let lastScannedCode = '';
 
     function showStatus(message, type = '') {
@@ -171,7 +172,7 @@
     }
 
     function makeRequestId() {
-      if (window.crypto && crypto.randomUUID) {
+      if (window.crypto && typeof crypto.randomUUID === 'function') {
         return crypto.randomUUID();
       }
 
@@ -180,19 +181,31 @@
     }
 
     function stopPendingRequest() {
-      if (requestTimeout) {
+      if (requestTimeout !== null) {
         clearTimeout(requestTimeout);
         requestTimeout = null;
       }
 
       if (requestScript) {
         requestScript.onerror = null;
-        requestScript.remove();
+        requestScript.onload = null;
+
+        if (requestScript.parentNode) {
+          requestScript.parentNode.removeChild(requestScript);
+        }
+
         requestScript = null;
       }
 
-      // Keep the global callback defined.
-      // Removing it while a response is executing can hide the result.
+      if (activeCallbackName) {
+        try {
+          delete window[activeCallbackName];
+        } catch (error) {
+          window[activeCallbackName] = undefined;
+        }
+
+        activeCallbackName = null;
+      }
     }
 
     async function startScanner() {
@@ -235,7 +248,7 @@
             if (scannerRunning) {
               try {
                 await scanner.pause(true);
-              } catch (e) {}
+              } catch (error) {}
             }
           },
           () => {}
@@ -279,19 +292,20 @@
       barcodeInput.focus();
     }
 
-    function handleTransactionResponse(result) {
-      if (!pendingRequestId) return;
-
-      const expectedRequestId = pendingRequestId;
+    function handleTransactionResponse(result, expectedRequestId) {
+      // Ignore stale callbacks from an earlier request.
+      if (!pendingRequestId || pendingRequestId !== expectedRequestId) {
+        return;
+      }
 
       if (!result || result.requestId !== expectedRequestId) {
-        pendingRequestId = null;
         stopPendingRequest();
+        pendingRequestId = null;
         submitButton.disabled = false;
 
         showStatus(
           'A response arrived, but its request ID did not match. ' +
-          'Check Log and On Hand quantities before retrying.',
+          'Check Log and On Hand before retrying.',
           'error'
         );
         return;
@@ -306,6 +320,7 @@
           result.message || 'Transaction recorded successfully.',
           'success'
         );
+
         resetForm();
         resumeScanner();
       } else {
@@ -315,9 +330,6 @@
         );
       }
     }
-
-    // Expose the callback for Apps Script JSONP responses.
-    window.handleTransactionResponse = handleTransactionResponse;
 
     form.addEventListener('submit', event => {
       event.preventDefault();
@@ -356,9 +368,19 @@
       submitButton.disabled = true;
       showStatus('Submitting transaction. Please wait...');
 
+      // Unique JSONP callback per request prevents callback-name reuse.
+      const callbackName =
+        'inventoryCallback_' + requestId.replace(/[^a-zA-Z0-9_]/g, '_');
+
+      activeCallbackName = callbackName;
+
+      window[callbackName] = result => {
+        handleTransactionResponse(result, requestId);
+      };
+
       const params = new URLSearchParams({
         tx: '1',
-        callback: 'handleTransactionResponse',
+        callback: callbackName,
         requestId: requestId,
         barcode: barcode,
         action: action,
@@ -366,11 +388,24 @@
         notes: notes
       });
 
-      requestScript = document.createElement('script');
-      requestScript.async = true;
-      requestScript.src = BACKEND_URL + '?' + params.toString();
+      const script = document.createElement('script');
+      requestScript = script;
+      script.async = true;
+      script.src = BACKEND_URL + '?' + params.toString();
 
-      requestScript.onerror = () => {
+      script.onload = () => {
+        // A script can load without invoking the expected JSONP callback.
+        // Leave the timeout active so we don't falsely report success.
+        if (pendingRequestId === requestId &&
+            activeCallbackName === callbackName) {
+          showStatus(
+            'Apps Script loaded, but did not confirm the transaction yet. ' +
+            'Waiting for confirmation...',
+          );
+        }
+      };
+
+      script.onerror = () => {
         if (pendingRequestId !== requestId) return;
 
         stopPendingRequest();
@@ -378,7 +413,7 @@
         submitButton.disabled = false;
 
         showStatus(
-          'The browser failed to load the Apps Script response. ' +
+          'Safari could not load the Apps Script response. ' +
           'The transaction outcome is unknown. Check Log and On Hand ' +
           'before retrying.',
           'error'
@@ -393,13 +428,14 @@
         submitButton.disabled = false;
 
         showStatus(
-          'Timed out waiting for Apps Script. The transaction outcome ' +
-          'is unknown. Check Log and On Hand before retrying.',
+          'Timed out waiting for Apps Script confirmation. ' +
+          'The transaction outcome is unknown. Check Log and On Hand ' +
+          'before retrying.',
           'error'
         );
       }, 20000);
 
-      document.body.appendChild(requestScript);
+      document.body.appendChild(script);
     });
 
     clearButton.addEventListener('click', () => {
