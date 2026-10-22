@@ -125,7 +125,10 @@
       if (scanning) return;
 
       if (typeof Html5Qrcode === 'undefined') {
-        showStatus('Scanner library failed to load. Check your internet connection.', false);
+        showStatus(
+          'Scanner library failed to load. Check your internet connection.',
+          false
+        );
         return;
       }
 
@@ -205,12 +208,11 @@
       }
     }
 
-    async function submitTransaction() {
+    function submitTransaction() {
       const barcode = document.getElementById('barcode').value.trim();
       const action = document.getElementById('action').value;
       const quantity = Number(document.getElementById('quantity').value);
       const notes = document.getElementById('notes').value.trim();
-      const button = document.getElementById('submitButton');
 
       if (!barcode) {
         showStatus('Scan or enter a barcode first.', false);
@@ -222,45 +224,19 @@
         return;
       }
 
-      button.disabled = true;
-      button.textContent = 'Sending...';
+      const params = new URLSearchParams({
+        tx: '1',
+        barcode: barcode,
+        action: action,
+        quantity: String(quantity),
+        notes: notes
+      });
 
-      try {
-        /*
-         * no-cors avoids a browser preflight request.
-         * The browser will not reveal the backend response, so
-         * this cannot confirm that the transaction was recorded.
-         */
-        await fetch(BACKEND_URL, {
-          method: 'POST',
-          mode: 'no-cors',
-          headers: {
-            'Content-Type': 'text/plain;charset=UTF-8'
-          },
-          body: JSON.stringify({
-            barcode: barcode,
-            action: action,
-            quantity: quantity,
-            notes: notes
-          })
-        });
+      const transactionUrl =
+        BACKEND_URL + '?' + params.toString();
 
-        showStatus(
-          'Request sent, but recording is NOT yet confirmed. Check the Log tab before submitting again.',
-          true
-        );
-
-      } catch (error) {
-        showStatus(
-          'Could not send transaction: ' +
-          (error.message || String(error)),
-          false
-        );
-
-      } finally {
-        button.disabled = false;
-        button.textContent = 'Record Transaction';
-      }
+      showStatus('Opening Google to record the transaction...', true);
+      window.location.href = transactionUrl;
     }
 
     async function clearForm() {
